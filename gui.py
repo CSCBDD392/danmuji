@@ -55,15 +55,25 @@ class App:
         ttk.Spinbox(frm, from_=0, to=8, textvariable=self.screen, width=5).grid(
             row=4, column=1, sticky="w", padx=6)
 
+        ttk.Label(frm, text="面板初始大小 / 拉伸方式").grid(row=5, column=0, sticky="w")
+        sz = ttk.Frame(frm)
+        sz.grid(row=5, column=1, sticky="w", padx=6, pady=2)
+        self.size = tk.StringVar(value=str(dm.get("size", 480)))
+        ttk.Spinbox(sz, from_=200, to=2000, increment=20, textvariable=self.size,
+                    width=6).pack(side="left")
+        self.sizemode = tk.StringVar(value=dm.get("size_mode", "square"))
+        ttk.Combobox(sz, textvariable=self.sizemode, width=8, state="readonly",
+                     values=["square", "free"]).pack(side="left", padx=6)
+
         self.btn = ttk.Button(frm, text="开始", command=self.toggle)
-        self.btn.grid(row=5, column=0, columnspan=2, sticky="ew", pady=10)
+        self.btn.grid(row=6, column=0, columnspan=2, sticky="ew", pady=10)
         self.status = tk.StringVar(value="未开始")
         ttk.Label(frm, textvariable=self.status, foreground="#555").grid(
-            row=6, column=0, columnspan=2, sticky="w")
+            row=7, column=0, columnspan=2, sticky="w")
 
         self.hint = tk.StringVar(value="")
         ttk.Label(frm, textvariable=self.hint, foreground="#888", wraplength=380,
-                  justify="left").grid(row=7, column=0, columnspan=2, sticky="w", pady=6)
+                  justify="left").grid(row=8, column=0, columnspan=2, sticky="w", pady=6)
 
         r.protocol("WM_DELETE_WINDOW", self.close)
         r.after(1000, self._tick)
@@ -83,6 +93,8 @@ class App:
         dm["host_title"] = self.host.get().strip()
         dm["side"] = self.side.get()
         dm["screen"] = int(self.screen.get() or 0)
+        dm["size"] = int(self.size.get() or 480)
+        dm["size_mode"] = self.sizemode.get()
         try:
             M.save_cfg(self.cfg, self.cfg_path)
         except Exception as e:
