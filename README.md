@@ -139,11 +139,15 @@ python danmu.py --size-mode free        :: 拉伸时宽高各自变（默认 squ
 
 一条「点歌」会**同时搜三家**，按匹配度混排，再依次取直链，谁先拿到能放的完整版就用谁：
 
-| 源 | 默认端口 | 说明 |
-| --- | --- | --- |
-| 酷狗 | `4000` | 内置在 `vendor/kugou-api/`，程序自己拉起，不用额外装 |
-| 网易云 | `3000` | 你自己的 `api-enhanced`；不在线就跳过 |
-| QQ音乐 | `3300` | 你自己的 `QQMusicapi`；没登录时能搜不能放（回「无权限/需要 VIP」） |
+| 源 | 默认端口 | 说明 | 上游地址 |
+| --- | --- | --- | --- |
+| 酷狗 | `4000` | 内置在 `vendor/kugou-api/`，程序自己拉起，不用额外装 | https://github.com/MakcRe/KuGouMusicApi （v1.6.0，MIT） |
+| 网易云 | `3000` | 你自己的 `api-enhanced`；不在线就跳过 | https://github.com/NeteaseCloudMusicApiEnhanced/api-enhanced （v4.40.0）· 文档 https://neteasecloudmusicapienhanced.js.org/ |
+| QQ音乐 | `3300` | 你自己的 `QQMusicapi`；没登录时能搜不能放（回「无权限/需要 VIP」） | 来源未公开（`qqmusic-api-node` v0.1.0，Koa 实现），见下注 |
+
+> QQ 音乐那套 API 的作者没在包里留上游仓库，所以这里不给链接。想自己搭一个功能接近的，
+> 可以参考 <https://github.com/jsososo/QQMusicApi>（Express 实现）——**不是同一份代码**，
+> 接口路径也不同：本项目调的是 `POST /search/byType` 与 `GET /song/urls`。
 
 `config.json → music`：
 
