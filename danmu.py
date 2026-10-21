@@ -57,6 +57,19 @@ def _title_of(hwnd):
     return buf.value
 
 
+def _class_of(hwnd):
+    buf = ctypes.create_unicode_buffer(256)
+    user32.GetClassNameW(hwnd, buf, 256)
+    return buf.value
+
+
+def window_rect(hwnd):
+    r = wt.RECT()
+    if not user32.GetWindowRect(hwnd, ctypes.byref(r)):
+        return (0, 0, 0, 0)
+    return (r.left, r.top, r.right, r.bottom)
+
+
 def _pid_of(hwnd):
     p = wt.DWORD()
     user32.GetWindowThreadProcessId(hwnd, ctypes.byref(p))
@@ -79,8 +92,12 @@ def exe_of(hwnd):
     return os.path.basename(path.value)
 
 
-def find_window(substr, app=""):
-    """按标题子串（可选再加进程名）找可见且未最小化的窗口，返回 hwnd。"""
+def find_window(substr, app="", cls=""):
+    """按标题子串 / 类名子串 / 进程名找可见窗口，返回 hwnd 或 None。
+
+    title 与 cls 互为主备：B 站直播页在浏览器里标题就带「哔哩哔哩直播间」，
+    而 Electron 播放器常常只有类名能认出来。
+    """
     want = (app or "").lower()
     hits = []
 
@@ -89,12 +106,29 @@ def find_window(substr, app=""):
         if not user32.IsWindowVisible(hwnd) or user32.IsIconic(hwnd):
             return True
         title = _title_of(hwnd)
-        if substr.lower() in title.lower() and (not want or want in exe_of(hwnd).lower()):
-            hits.append(hwnd)
+        cname = _class_of(hwnd)
+        ok_t = bool(substr) and substr.lower() in title.lower()
+        ok_c = bool(cls) and cls.lower() in cname.lower()
+        if not (ok_t or ok_c):
+            return True
+        if want and want not in exe_of(hwnd).lower():
+            return True
+        l, t, r, b = window_rect(hwnd)
+        if r - l < 80 or b - t < 60:
+            return True
+        score = 0
+        if ok_t:
+            score += 100 if title.lower() == substr.lower() else 50
+        if ok_c:
+            score += 40
+        hits.append((score, title, hwnd))
         return True
 
     user32.EnumWindows(cb, 0)
-    return hits[0] if hits else None
+    if not hits:
+        return None
+    hits.sort(key=lambda x: (-x[0], x[1]))
+    return hits[0][2]
 
 
 def monitor_rect(index=0):
@@ -173,9 +207,10 @@ class _Hotkey:
 class DanmuPanel:
     """正方形弹幕面板。默认贴目标窗口右侧，边长=目标窗口高度。"""
 
-    def __init__(self, cfg, host_title="", test=False, port=0, app="", screen=None):
+    def __init__(self, cfg, host_title="", test=False, port=0, app="", cls="", screen=None):
         self.cfg = cfg
         self.host_title = host_title
+        self.host_class = cls
         self.app = app
         self.port = port
         self.test = test
@@ -402,7 +437,7 @@ class DanmuPanel:
     def _place(self):
         """初始定位：有目标窗口就贴它（正方形时边长=窗口高度），否则固定屏幕上。"""
         cfg, side = self.cfg, self.side
-        host = find_window(self.host_title, self.app) if self.host_title else None
+        host = find_window(self.host_title, self.app, self.host_class) if (self.host_title or self.host_class) else None
         if host:
             self.host = host
             _, top, _, bottom = self._host_rect(host)
@@ -438,7 +473,7 @@ class DanmuPanel:
             if (self.host_title and self._follow_on and
                     self.cfg.get("attach", "side") != "free"):
                 if self.host is None or not user32.IsWindow(self.host):
-                    self.host = find_window(self.host_title, self.app)
+                    self.host = find_window(self.host_title, self.app, self.host_class)
                 if self.host:
                     left, top, right, bottom = self._host_rect(self.host)
                     size = max(bottom - top, 320)
@@ -702,6 +737,7 @@ def main():
     here = os.path.dirname(os.path.abspath(__file__))
     ap = argparse.ArgumentParser()
     ap.add_argument("--host", default=None, help="吸附的窗口标题子串（留空=固定在屏幕上）")
+    ap.add_argument("--host-class", default=None, help="吸附窗口的类名子串（标题认不出时用）")
     ap.add_argument("--app", default=None, help="限定进程名，如 PotPlayerMini64.exe")
     ap.add_argument("--side", default=None, choices=["left", "right"], help="贴窗口左边还是右边")
     ap.add_argument("--screen", type=int, default=None, help="不跟窗口时投到第几块屏幕（0 起）")
@@ -735,6 +771,7 @@ def main():
         cfg["side"] = a.side
     DanmuPanel(cfg, host, a.test, port,
                app=cfg.get("app", "") if a.app is None else a.app,
+               cls=cfg.get("host_class","") if a.host_class is None else a.host_class,
                screen=a.screen).show()
 
 
