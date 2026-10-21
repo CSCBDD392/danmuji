@@ -65,18 +65,36 @@ class App:
         ttk.Combobox(sz, textvariable=self.sizemode, width=8, state="readonly",
                      values=["square", "free"]).pack(side="left", padx=6)
 
+        ttk.Label(frm, text="音乐源（勾选的都会搜，前面的优先）").grid(
+            row=6, column=0, sticky="nw", pady=6)
+        src = ttk.Frame(frm)
+        src.grid(row=6, column=1, sticky="w", padx=6, pady=6)
+        mu = self.cfg.setdefault("music", {})
+        self.srcvars = {}
+        for i, (key, label) in enumerate((("kugou", "酷狗"), ("netease", "网易云"),
+                                          ("qq", "QQ音乐"))):
+            v = tk.BooleanVar(value=(key == "kugou" or
+                                     (mu.get(key) or {}).get("enabled", True)))
+            self.srcvars[key] = v
+            ttk.Checkbutton(src, text=label, variable=v).grid(row=0, column=i,
+                                                              sticky="w", padx=(0, 10))
+        self.srcstat = tk.StringVar(value="")
+        ttk.Label(src, textvariable=self.srcstat, foreground="#888").grid(
+            row=1, column=0, columnspan=3, sticky="w")
+
         self.btn = ttk.Button(frm, text="开始", command=self.toggle)
-        self.btn.grid(row=6, column=0, columnspan=2, sticky="ew", pady=10)
+        self.btn.grid(row=7, column=0, columnspan=2, sticky="ew", pady=10)
         self.status = tk.StringVar(value="未开始")
         ttk.Label(frm, textvariable=self.status, foreground="#555").grid(
-            row=7, column=0, columnspan=2, sticky="w")
+            row=8, column=0, columnspan=2, sticky="w")
 
         self.hint = tk.StringVar(value="")
         ttk.Label(frm, textvariable=self.hint, foreground="#888", wraplength=380,
-                  justify="left").grid(row=8, column=0, columnspan=2, sticky="w", pady=6)
+                  justify="left").grid(row=9, column=0, columnspan=2, sticky="w", pady=6)
 
         r.protocol("WM_DELETE_WINDOW", self.close)
         r.after(1000, self._tick)
+        r.after(400, self._probe_sources)
 
     # ---------- 控制 ----------
     def toggle(self):
@@ -95,6 +113,14 @@ class App:
         dm["screen"] = int(self.screen.get() or 0)
         dm["size"] = int(self.size.get() or 480)
         dm["size_mode"] = self.sizemode.get()
+        mu = self.cfg.setdefault("music", {})
+        enabled = [k for k in ("kugou", "netease", "qq") if self.srcvars[k].get()]
+        if not enabled:
+            enabled = ["kugou"]
+            self.srcvars["kugou"].set(True)
+        mu["order"] = enabled + [k for k in mu.get("order", []) if k not in enabled]
+        for k in ("netease", "qq"):
+            mu.setdefault(k, {})["enabled"] = k in enabled
         try:
             M.save_cfg(self.cfg, self.cfg_path)
         except Exception as e:
@@ -137,6 +163,29 @@ class App:
             self.root.after(1000, self._tick)
         except Exception:
             pass
+
+    def _probe_sources(self):
+        """后台探一下三家服务在不在，别卡住界面。"""
+        def work():
+            try:
+                import source
+                eng = getattr(self, "player", None)
+                eng = eng.engine if eng else None
+                if eng is None:
+                    # 还没点开始，也要能看到酷狗在不在
+                    import kgapi
+                    eng = kgapi.KugouEngine(self.cfg)
+                st = source.Sources(self.cfg, eng).status()
+                txt = " · ".join("%s%s" % (x["label"], "✓" if x["up"] else "✗")
+                                 for x in st)
+            except Exception as e:
+                txt = "探测失败：%s" % e
+            try:
+                self.root.after(0, lambda: self.srcstat.set(txt))
+            except Exception:
+                pass
+
+        threading.Thread(target=work, daemon=True).start()
 
     def close(self):
         self.stop()
