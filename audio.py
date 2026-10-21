@@ -55,6 +55,13 @@ class AudioPlayer:
                 f.write(chunk)
                 total += len(chunk)
         os.replace(tmp, path)
+        if total < 24 * 1024:
+            # 小于 24KB 基本是「无版权/审核中」占位音，别当成功
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+            raise RuntimeError("文件太小（%d 字节），多半是占位音频" % total)
         log.info("已下载 %s (%d KB)", os.path.basename(path), total // 1024)
         return path
 
