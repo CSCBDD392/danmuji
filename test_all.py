@@ -76,9 +76,68 @@ def order_re_filter():
 def config_keys():
     with open("config.json", encoding="utf-8") as f:
         c = json.load(f)
-    for k in ("live", "kugou", "danmu", "queue"):
+    for k in ("live", "kugou", "kugou_api", "music", "audio", "danmu", "queue"):
         assert k in c, k
     assert "room" in c["live"] and "cdp_port" in c["kugou"] and "port" in c["danmu"]
+    assert c["music"]["order"][0] == "kugou", "默认先走酷狗（直链最稳）"
+    for n in ("netease", "qq"):
+        assert n in c["music"], "music 缺源: " + n
+
+
+def source_score():
+    import source
+    # 同名同歌手 > 同名翻唱 > 标题不搭
+    good = {"title": "晴天", "artist": "周杰伦", "source": "kugou", "duration": 269}
+    cover = {"title": "晴天", "artist": "某翻唱", "source": "qq", "duration": 269}
+    miss = {"title": "七里香", "artist": "周杰伦", "source": "kugou", "duration": 299}
+    assert source._score(good, "晴天") > source._score(cover, "晴天")
+    assert source._score(cover, "晴天") > source._score(miss, "晴天")
+    # 30 秒片段要明显降分
+    clip = dict(good, duration=30)
+    assert source._score(clip, "晴天") < source._score(good, "晴天")
+
+
+def source_adapters():
+    import source
+    # 三家解析都要能吃各自的原始返回，不联网（直接喂假请求结果）
+    ne = source.NeteaseSource("127.0.0.1", 1)
+    ne._fake = None
+    assert ne.name == "netease" and ne.label == "网易云"
+    qq = source.QQSource("127.0.0.1", 1)
+    assert qq.name == "qq" and qq.label == "QQ音乐"
+    kg = source.KugouSource("127.0.0.1", 1)
+    assert kg.label == "酷狗"
+    # 未知来源要给出说明而不是抛异常
+    s = source.Sources({"music": {"order": []}})
+    assert s.url({"source": "nope"}) == (None, "未知来源")
+    assert s.label({"source": "nope"}) == "nope"
+
+
+def audio_guard():
+    import audio
+    d = os.path.join(HERE, "_tmpcache")
+    p = audio.AudioPlayer({"cache_dir": d})
+    assert os.path.isdir(p.cache_dir)
+    # 小于 24KB 必须判失败（酷狗无版权时常给几百字节占位音）
+    src = os.path.join(d, "_src.mp3")
+    with open(src, "wb") as f:
+        f.write(b"ID3" + b"\0" * 100)
+    ok = False
+    try:
+        p.fetch("file:///" + src.replace("\\", "/").lstrip("/"), "tiny")
+    except Exception:
+        ok = True
+    finally:
+        for f in os.listdir(d):
+            try:
+                os.remove(os.path.join(d, f))
+            except OSError:
+                pass
+        try:
+            os.rmdir(d)
+        except OSError:
+            pass
+    assert ok, "占位音频不应被当成成功"
 
 
 def ui_imports():
@@ -94,6 +153,8 @@ if __name__ == "__main__":
     for n, f in [("parse_orders", parse_orders), ("wbi_sign", wbi_sign),
                  ("danmaku_packet", danmaku_packet), ("page_js", page_js),
                  ("order_re_filter", order_re_filter), ("config_keys", config_keys),
+                 ("source_score", source_score), ("source_adapters", source_adapters),
+                 ("audio_guard", audio_guard),
                  ("ui_imports", ui_imports)]:
         t(n, f)
     print("FAILED:", globals().get("FAILED", 0))
