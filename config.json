@@ -7,11 +7,27 @@
     "max_order_len": 40,
     "admin": []
   },
+  "kugou_api": {
+    "enabled": true,
+    "host": "127.0.0.1",
+    "port": 4000,
+    "root": "",
+    "start_timeout": 30,
+    "retry_backoff_sec": 90,
+    "dfid": "",
+    "token": "",
+    "userid": "",
+    "setup_done": false
+  },
   "kugou": {
     "cdp_port": 9333,
     "profile_dir": "",
     "browser": "",
     "page_wait_sec": 12
+  },
+  "audio": {
+    "cache_dir": "",
+    "keep_cache": 40
   },
   "queue": {
     "gap_sec": 2,
