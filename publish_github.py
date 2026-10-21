@@ -1,4 +1,4 @@
-﻿"""把 danmuji 发布到 GitHub（只用 GitHub REST API，不需要 git/gh）。
+"""把 danmuji 发布到 GitHub（只用 GitHub REST API，不需要 git/gh）。
 
 凭据查找顺序：
   1. 环境变量 GITHUB_TOKEN / GH_TOKEN
@@ -20,7 +20,8 @@ import urllib.request
 HERE = os.path.dirname(os.path.abspath(__file__))
 API = "https://api.github.com"
 # 不上传的东西
-SKIP_NAMES = {".git", "__pycache__", ".github-token", "config.local.json"}
+SKIP_NAMES = {".git", "__pycache__", ".github-token", "config.local.json",
+              "node_modules", ".pkgcache"}
 SKIP_EXT = {".pyc", ".png", ".jpg", ".log", ".zip"}
 DESC = "B 站弹幕点歌机 + 正方形弹幕面板：弹幕点歌 → 酷狗网页版播放；弹幕实时投影到任意窗口/屏幕旁"
 
