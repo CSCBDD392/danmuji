@@ -19,6 +19,14 @@
     "userid": "",
     "setup_done": false
   },
+  "music": {
+    "host": "127.0.0.1",
+    "order": ["kugou", "netease", "qq"],
+    "per_source": 6,
+    "try_limit": 6,
+    "netease": {"enabled": true, "port": 3000},
+    "qq": {"enabled": true, "port": 3300}
+  },
   "kugou": {
     "cdp_port": 9333,
     "profile_dir": "",
