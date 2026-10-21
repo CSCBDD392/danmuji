@@ -219,6 +219,10 @@ def ensure_panel(cfg):
         args += ["--app", dm["app"]]
     if dm.get("side"):
         args += ["--side", dm["side"]]
+    if dm.get("size"):
+        args += ["--size", str(dm["size"])]
+    if dm.get("size_mode"):
+        args += ["--size-mode", dm["size_mode"]]
     if dm.get("screen"):
         args += ["--screen", str(dm["screen"])]
     flags = 0x00000008 if os.name == "nt" else 0  # DETACHED_PROCESS
