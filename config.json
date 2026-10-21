@@ -1,0 +1,39 @@
+{
+  "live": {
+    "room": 7734200,
+    "sessdata": "",
+    "enabled": true,
+    "user_cooldown_sec": 20,
+    "max_order_len": 40,
+    "admin": []
+  },
+  "kugou": {
+    "cdp_port": 9333,
+    "profile_dir": "",
+    "browser": "",
+    "page_wait_sec": 12
+  },
+  "queue": {
+    "gap_sec": 2,
+    "wait_song_end": true,
+    "max_pending": 5,
+    "stay_on_top": true
+  },
+  "danmu": {
+    "port": 9701,
+    "host_title": "",
+    "app": "",
+    "side": "right",
+    "screen": 0,
+    "attach": "side",
+    "alpha": 0.92,
+    "bg": "#14151b",
+    "font_size": 12,
+    "max_msgs": 60,
+    "avatar": true,
+    "show_events": true,
+    "auto_scroll": true,
+    "toggle_hotkey": "ctrl+alt+d",
+    "quit_hotkey": "ctrl+alt+q"
+  }
+}
