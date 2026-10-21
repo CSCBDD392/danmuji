@@ -27,6 +27,7 @@ import bili
 import cdp
 import kugou
 import kgapi
+import source
 from audio import AudioPlayer
 from danmu import emit
 
@@ -135,6 +136,9 @@ class Player(threading.Thread):
         self.searcher = kugou.KugouSearch()
         self.page = None              # 惰性创建：只有退回网页版时才拉起浏览器
         self.engine = kgapi.KugouEngine(cfg)
+        self.sources = source.Sources(cfg, self.engine)
+        self.per_source = int((cfg.get("music") or {}).get("per_source", 6))
+        self.try_limit = int((cfg.get("music") or {}).get("try_limit", 6))
         self.audio = AudioPlayer(cfg.get("audio"))
         kc = cfg.get("kugou", {})
         qc = cfg.get("queue", {})
@@ -151,68 +155,83 @@ class Player(threading.Thread):
         return self.page
 
     def _play_api(self, song):
-        """用内置 API 播放：搜索 → 取直链 → 下载 → 本地播放。"""
+        """聚合播放：三家一起搜 → 挑最贴合的 → 依次尝试取直链 → 下载播放。
+
+        某家拿不到地址（比如 QQ 没登录）就顺手试下一家，一首歌在多平台都有时
+        能自然兜底。全失败才返回 None 交给网页版兜底。
+        """
         try:
             if not self.engine.ensure():
                 return None
         except Exception as e:
             log.info("酷狗 API 不可用：%s", e)
             return None
-        cands = self.engine.search(song["title"], 10)
+        cands = self.sources.search(song["title"], self.per_source)
         if not cands:
             return None
         want_a = (song.get("artist") or "").lower()
+        kw = (song.get("title") or "").strip().lower()
 
         def score(c):
             s = 0
-            if c["title"] == song["title"]:
+            t = (c.get("title") or "").lower()
+            if t == kw:
                 s += 20
-            elif song["title"] in c["title"]:
+            elif kw and kw in t:
                 s += 12
             else:
                 s -= 8
             got_a = (c.get("artist") or "").lower()
             if want_a and want_a in got_a:
                 s += 12
-            if any(x in c["title"] for x in ("live", "伴奏", "dj", "翻唱", "remix", "片段")):
+            if any(x in t for x in ("live", "伴奏", "dj", "翻唱", "remix", "片段")):
                 s -= 5
             if any(x in got_a for x in ("儿歌", "童声", "翻唱", "cover")):
                 s -= 6
-            if c.get("filesize"):
-                # 完整版一般 3~12MB，明显偏小的多半是试听/片段
-                if c["filesize"] < 900 * 1024:
-                    s -= 8
+            n = c.get("filesize")
+            if n and n < 900 * 1024:
+                s -= 8
+            if (c.get("duration") or 0) < 60:
+                s -= 6
             return s
 
         cands.sort(key=score, reverse=True)
-        best_trial = None
-        for c in cands[:5]:
-            url, why = self.engine.song_url(c["hash"], c.get("album_id"))
+        trial = None
+        tried = set()
+        for c in cands:
+            if score(c) < 0:
+                break
+            url, why, c = self.sources.url_with_fallback(c, tried)
             if not url:
-                log.info("取址失败 %s：%s", c["title"], why)
+                log.info("%s《%s》取不到地址：%s",
+                         self.sources.label(c), c["title"], why)
                 continue
-            trial = "/yp/p_" in url and "/yp/full/" not in url
-            if trial:
-                # 免费分片：先记着，等确认没有完整版再退而求其次
-                if best_trial is None:
-                    best_trial = (c, url)
-                log.info("%s 只有试听片段，继续找完整版", c["title"])
+            # 同一个源已经确认放不了就不再反复问它
+            tried.add(c.get("source"))
+            is_trial = "/yp/p_" in url and "/yp/full/" not in url
+            if is_trial:
+                if trial is None:
+                    trial = (c, url)
                 continue
-            try:
-                path = self.audio.fetch(url, "%s - %s" % (c.get("artist") or "", c["title"]))
-            except Exception as e:
-                log.warning("下载失败：%s", e)
-                continue
-            return {"ok": True, "how": "api", "song": c, "path": path, "trial": False}
-        if best_trial:
-            c, url = best_trial
-            try:
-                path = self.audio.fetch(url, "%s - %s" % (c.get("artist") or "", c["title"]))
+            got = self._download(c, url)
+            if got:
+                return got
+        if trial:
+            c, url = trial
+            got = self._download(c, url)
+            if got:
+                got["trial"] = True
                 self.push.event("这首歌只有试听片段，登录酷狗 VIP 可听完整版")
-                return {"ok": True, "how": "api", "song": c, "path": path, "trial": True}
-            except Exception as e:
-                log.warning("试听片段下载失败：%s", e)
+                return got
         return None
+
+    def _download(self, c, url):
+        try:
+            path = self.audio.fetch(url, "%s - %s" % (c.get("artist") or "", c["title"]))
+        except Exception as e:
+            log.warning("下载失败：%s", e)
+            return None
+        return {"ok": True, "how": "api", "song": c, "path": path, "trial": False}
 
     def order(self, song, user=""):
         if self.q.qsize() >= self.max_pending:
@@ -241,7 +260,7 @@ class Player(threading.Thread):
             try:
                 res = self._play_api(song)
                 if res is None:
-                    self.push.event("《%s》没取到酷狗直链，改用网页版" % song["title"])
+                    self.push.event("《%s》三家都没取到直链，改用网页版" % song["title"])
                     res = self._play_web(song)
                 if res is None:
                     self.push.event("《%s》暂时放不了" % song["title"])
@@ -250,7 +269,9 @@ class Player(threading.Thread):
                     self.current = res
                 if res.get("how") == "api":
                     hit = res["song"]
-                    self.push.event("▶ 点播《%s》- %s" % (hit["title"], hit.get("artist") or ""))
+                    self.push.event("▶ 点播《%s》- %s（%s）" % (
+                        hit["title"], hit.get("artist") or "",
+                        self.sources.label(hit)))
                     log.info("本地播放：%s", res["path"])
                     self.audio.play(res["path"], block=True)      # 阻塞到播完
                 elif res.get("ok"):
@@ -515,10 +536,14 @@ if __name__ == "__main__":
     ap.add_argument("--offline", action="store_true", help="不连 B 站，stdin 当弹幕源")
     ap.add_argument("--panel", "--layer", dest="panel", action="store_true",
                     help="只开弹幕面板")
+    ap.add_argument("--player-only", dest="player_only", action="store_true",
+                    help="只跑点歌机，不开弹幕面板（和弹幕机完全分开）")
     ap.add_argument("--gui", action="store_true", help="开控制窗口")
     ap.add_argument("--selftest", action="store_true")
     ap.add_argument("--setup", action="store_true",
                     help="重新走首次运行向导（问要不要登录酷狗 VIP）")
+    ap.add_argument("--sources", action="store_true",
+                    help="看看三家音乐源现在通不通")
     ap.add_argument("--cfg", default=os.path.join(HERE, "config.json"))
     a = ap.parse_args()
     if a.offline:
@@ -535,6 +560,20 @@ if __name__ == "__main__":
         time.sleep(1.0)
         print("弹幕面板端口 %s 已就绪" % cfg.get("danmu", {}).get("port", 9701))
         raise SystemExit(0)
+    elif a.sources:
+        e = kgapi.KugouEngine(cfg)
+        srcs = source.Sources(cfg, e)
+        print("配置顺序:", " -> ".join(srcs.order))
+        for st in srcs.status():
+            print("  %-8s %s" % (st["label"], "在线" if st["up"] else "连不上"))
+        kw = a.once or "晴天"
+        print("\n搜「%s」:" % kw)
+        for c in srcs.search(kw, 2):
+            print("  [%s] %s - %s" % (srcs.label(c), c["title"], c["artist"]))
+        if a.once:
+            u, why, hit = srcs.url_with_fallback(srcs.search(a.once, 1)[0]) \
+                if srcs.search(a.once, 1) else (None, "没结果", None)
+            print("\n直链:", (u or "拿不到")[:90] if u else "拿不到：%s" % why)
     elif a.once:
         s = parse_order("点歌 " + a.once) or {"title": a.once, "artist": ""}
         p = Player(cfg, Push(0))
@@ -556,4 +595,4 @@ if __name__ == "__main__":
         save_cfg(cfg, a.cfg)
     else:
         first_run(cfg, a.cfg)
-        run(cfg)
+        run(cfg, panel=not a.player_only)
