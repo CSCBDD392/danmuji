@@ -43,6 +43,10 @@ class MONITORINFO(ctypes.Structure):
     _fields_ = [("cbSize", wt.DWORD), ("rcMonitor", wt.RECT),
                 ("rcWork", wt.RECT), ("dwFlags", wt.DWORD)]
 
+# overrideredirect 窗口不会自动换鼠标样式，自己 SetCursor
+_IDC = {"size_ns": 32645, "size_we": 32644, "size_nw_se": 32642,
+        "size_ne_sw": 32643, "fleur": 32646}
+
 
 def _title_of(hwnd):
     n = user32.GetWindowTextLengthW(hwnd)
@@ -177,15 +181,22 @@ class DanmuPanel:
         self.test = test
         self.hidden = False
         self.host = None
-        self.dragging = False
-        self.moved = False          # 用户拖过之后就不再自动吸附
-        self._dxy = (0, 0)
+        self.mode = "move"          # move / size
+        self.edge = ""              # n s e w ne nw se sw
+        self._press_xy = (0, 0)
+        self._geo = (0, 0, 0, 0)    # 拖拽起始的 x y w h
+        self._follow_on = True
 
         self.bg = cfg.get("bg", "#14151b")
         self.rows = []              # 消息行 Frame
+        self._wrap_lbls = []        # 需要随窗口宽度重排的正文 Label
         self.avatars = {}
         self.max_msgs = int(cfg.get("max_msgs", 30))
         self.side = cfg.get("side", "right")
+        self.size_mode = cfg.get("size_mode", "square")   # square / free
+        self.edge_margin = int(cfg.get("edge_margin", 0))
+        self.min_w = int(cfg.get("min_width", 260))
+        self.min_h = int(cfg.get("min_height", 160))
 
         self.root = r = tk.Tk()
         r.title("弹幕面板")
@@ -216,12 +227,23 @@ class DanmuPanel:
         r.update_idletasks()
         self.hwnd = user32.GetParent(r.winfo_id())
 
-        for w in (r, self.header, self.canvas, self.inner):
-            w.bind("<Button-1>", self._drag_start)
-            w.bind("<B1-Motion>", self._drag)
-            w.bind("<ButtonRelease-1>", self._drag_end)
-            w.bind("<Button-3>", lambda e: r.destroy())
-            w.bind("<Double-Button-1>", lambda e: r.destroy())
+        # 手动光标：overrideredirect 窗口不会自动切 cursor，得自己设
+        self.cursors = {}
+        for c in ("size_ns", "size_we", "size_nw_se", "size_ne_sw", "fleur"):
+            try:
+                self.cursors[c] = user32.LoadCursorW(None, _IDC[c])
+            except Exception:
+                self.cursors[c] = None
+        self._hover_mode = ("move", "")
+
+        self._wire(r)
+        for w in (self.header, self.lbl_title, self.dot, self.hint_lbl):
+            self._wire(w, drag_only=True)
+        self._wire(self.canvas)
+        self._wire(self.inner)
+        r.bind("<Button-3>", lambda e: r.destroy())
+        r.bind("<Double-Button-1>", lambda e: r.destroy())
+        r.bind("<Escape>", lambda e: r.destroy())
         self.canvas.bind("<MouseWheel>", self._wheel)
         self.inner.bind("<MouseWheel>", self._wheel)
 
@@ -256,8 +278,10 @@ class DanmuPanel:
         self.title_lbl = tk.Label(h, text="弹幕", fg="#e8e8f0", bg="#1d1f27",
                                   font=("Microsoft YaHei UI", 9), anchor="w")
         self.title_lbl.pack(side="left")
-        tk.Label(h, text="�� 拖动 / 右键关闭", fg="#6b6f80", bg="#1d1f27",
-                 font=("Microsoft YaHei UI", 8)).pack(side="right", padx=6)
+        self.lbl_title = self.title_lbl
+        self.hint_lbl = tk.Label(h, text="边角拖动缩放 · 右键关闭", fg="#6b6f80",
+                                 bg="#1d1f27", font=("Microsoft YaHei UI", 8))
+        self.hint_lbl.pack(side="right", padx=6)
 
     def set_title(self, text, ok=True):
         try:
@@ -266,9 +290,117 @@ class DanmuPanel:
         except Exception:
             pass
 
+    # ---------- 拖拽 / 缩放 ----------
+    def _wire(self, w, drag_only=False):
+        """<Button-1> 开始拖，之后靠轮询鼠标位置更新（tk 的 B1-Motion 在鼠标
+        移出窗口后会断流，跨屏拖动就卡住）；拖拽时再渲染内容会卡（Tk bug）。"""
+        w.bind("<Button-1>", self._press if not drag_only else self._press_plain)
+        if not drag_only:
+            w.bind("<Motion>", self._hover)
+
+    def _zone(self, w, y):
+        """返回 (move|size, 边)。标题条只移动，内容区四边四角 6px 可缩放。"""
+        if w in (self.header, self.lbl_title, self.dot, self.hint_lbl):
+            return "move", ""
+        hh, h, ww = 26, self.root.winfo_height(), self.root.winfo_width()
+        top = y - hh
+        b = h - y
+        e = 6
+        v = "n" if (0 <= top < e) else ("s" if (0 <= b < e) else "")
+        hz = "w" if y < -1e9 else ("w" if getattr(self, "_hover_x", 99) < e else
+                                   ("e" if getattr(self, "_hover_w", 0) - getattr(self, "_hover_x", 0) < e else ""))
+        if v or hz:
+            return "size", (v + hz) or "s"
+        return "move", ""
+
+    def _hover(self, e):
+        ww, hh = self.root.winfo_width(), self.root.winfo_height()
+        self._hover_x, self._hover_w = e.x, ww
+        e_ = 6
+        top = e.y - 26
+        v = "n" if (0 <= top < e_) else ("s" if (0 <= hh - e.y < e_) else "")
+        hz = "w" if e.x < e_ else ("e" if ww - e.x < e_ else "")
+        if v or hz:
+            edge, mode = (v + hz), "size"
+            cur = {"n": "size_ns", "s": "size_ns", "e": "size_we", "w": "size_we",
+                   "ne": "size_ne_sw", "sw": "size_ne_sw", "nw": "size_nw_se",
+                   "se": "size_nw_se"}.get(edge, "size_nw_se")
+        else:
+            edge, mode, cur = "", "move", "fleur"
+        hcur = self.cursors.get(cur)
+        if hcur:
+            user32.SetCursor(hcur)
+        self._hover_mode = (mode, edge)
+
+    def _press_plain(self, e):
+        self._hover_mode = ("move", "")
+        self._press(e)
+
+    def _press(self, e):
+        self._press_xy = (e.x_root, e.y_root)
+        self.mode, self.edge = getattr(self, "_hover_mode", ("move", ""))
+        self._geo = (self.root.winfo_x(), self.root.winfo_y(),
+                     self.root.winfo_width(), self.root.winfo_height())
+        self._drag_id = self.root.after(12, self._poll_dnd)
+
+    def _poll_dnd(self):
+        if not (user32.GetAsyncKeyState(0x01) & 0x8000):
+            self._end_drag()
+            return
+        pt = wt.POINT()
+        user32.GetCursorPos(ctypes.byref(pt))
+        try:
+            self._apply_dnd(pt.x, pt.y)
+        except Exception:
+            pass
+        self._drag_id = self.root.after(12, self._poll_dnd)
+
+    def _apply_dnd(self, cx, cy):
+        x0, y0, w0, h0 = self._geo
+        dx, dy = cx - self._press_xy[0], cy - self._press_xy[1]
+        if self.mode == "move":
+            self.root.geometry("+%d+%d" % (x0 + dx, y0 + dy))
+            if abs(dx) + abs(dy) > 4:
+                self._follow_on = False   # 自己摆过位置就别再自动贴
+            return
+        edge = self.edge
+        w, h, nx, ny = w0, h0, x0, y0
+        if "e" in edge:
+            w = max(self.min_w, w0 + dx)
+        if "w" in edge:
+            w = max(self.min_w, w0 - dx)
+            nx = x0 + (w0 - w)
+        if "s" in edge:
+            h = max(self.min_h, h0 + dy)
+        if "n" in edge:
+            h = max(self.min_h, h0 - dy)
+            ny = y0 + (h0 - h)
+        if self.size_mode == "square":
+            size = max(w, h) if w0 == h0 else (max(w, h) if (dx + dy) > 0 else min(w, h))
+            size = max(size, self.min_w, self.min_h)
+            w = h = size
+            if "w" in edge:
+                nx = x0 + (w0 - w)
+            if "n" in edge:
+                ny = y0 + (h0 - h)
+        self.root.geometry("%dx%d+%d+%d" % (w, h, nx, ny))
+        self._follow_on = False
+        self._reflow()
+
+    def _end_drag(self):
+        try:
+            self.root.after_cancel(self._drag_id)
+        except Exception:
+            pass
+        self._reflow()
+
     # ---------- 位置 ----------
+    def _default_size(self):
+        s = int(self.cfg.get("size", 0) or 0)
+        return s or 480
+
     def _place(self):
-        """初始定位：有目标窗口就贴它（边长=窗口高度），否则固定在屏幕上。"""
+        """初始定位：有目标窗口就贴它（正方形时边长=窗口高度），否则固定屏幕上。"""
         cfg, side = self.cfg, self.side
         host = find_window(self.host_title, self.app) if self.host_title else None
         if host:
@@ -276,17 +408,19 @@ class DanmuPanel:
             _, top, _, bottom = self._host_rect(host)
             size = max(bottom - top, 320)
             x = self._host_x(host, size, side)
-            self.root.geometry("%dx%d+%d+%d" % (size, size, x, top))
+            if self.size_mode == "free":
+                w, h = int(cfg.get("size", 0) or 0) or size, size
+                x = self._host_x(host, w, side)
+                self.root.geometry("%dx%d+%d+%d" % (w, h, x, top))
+            else:
+                self.root.geometry("%dx%d+%d+%d" % (size, size, x, top))
             return
-        mleft, mtop, mright, _ = monitor_rect(self.cfg.get("screen", 0)
-                                               if not self.host_title else
-                                               self._monitor_of_host())
-        size = int(cfg.get("size", 0) or 0) or min(mright - mleft, 520)
+        mleft, mtop, mright, mbot = monitor_rect(cfg.get("screen", 0))
+        size = min(self._default_size(), mbot - mtop - 80, mright - mleft - 80)
         x = mright - size - 40 if side == "right" else mleft + 40
-        self.root.geometry("%dx%d+%d+%d" % (size, size, x, mtop + 80))
-
-    def _monitor_of_host(self):
-        return 0
+        x = max(mleft, min(x, mright - size))       # 别掉出屏幕
+        y = max(mtop, min(mtop + 80, mbot - size))
+        self.root.geometry("%dx%d+%d+%d" % (size, size, x, y))
 
     @staticmethod
     def _host_rect(hwnd):
@@ -296,44 +430,42 @@ class DanmuPanel:
 
     def _host_x(self, hwnd, size, side):
         left, _, right, _ = self._host_rect(hwnd)
-        return right - size if side == "right" else left
+        return (right - size if side == "right" else left)
 
     def _follow(self):
+        """目标窗口移动/缩放时把面板重新贴上去（用户自己拖过就不管了）。"""
         try:
-            if self.host_title and not self.moved and not self.dragging and \
-                    self.cfg.get("attach", "side") != "free":
+            if (self.host_title and self._follow_on and
+                    self.cfg.get("attach", "side") != "free"):
                 if self.host is None or not user32.IsWindow(self.host):
                     self.host = find_window(self.host_title, self.app)
                 if self.host:
                     left, top, right, bottom = self._host_rect(self.host)
                     size = max(bottom - top, 320)
-                    x = self._host_x(self.host, size, self.side)
+                    w = self.root.winfo_width() if self.size_mode == "free" else size
+                    h = self.root.winfo_height() if self.size_mode == "free" else size
+                    w = int(self.cfg.get("size", 0)) if self.size_mode == "free" else w
+                    x = self._host_x(self.host, w, self.side) + \
+                        (self.edge_margin if self.side == "right" else -self.edge_margin)
                     if not self.hidden:
-                        self.root.geometry("%dx%d+%d+%d" % (size, size, x, top))
-                elif self.cfg.get("auto_hide", True):
+                        self.root.geometry("%dx%d+%d+%d" % (w, h, x, top))
+                elif self.cfg.get("auto_hide", True) and not self.hidden:
                     self.root.withdraw()
         except Exception:
             pass
         try:
-            self.root.after(600, self._follow)
+            self.root.after(700, self._follow)
         except Exception:
             pass
 
-    def _drag_start(self, e):
-        self.dragging = True
-        self._dxy = (e.x_root - self.root.winfo_x(), e.y_root - self.root.winfo_y())
-
-    def _drag(self, e):
-        if not self.moved:
-            self.root.deiconify()
-        self.moved = True
-        dx, dy = self._dxy
-        self.root.geometry("+%d+%d" % (e.x_root - dx, e.y_root - dy))
-
-    def _drag_end(self, e):
-        self.dragging = False
-        # 双击吸附回去
-        if self.moved and self.cfg.get("snap_back_on_double_click", True):
+    def _reflow(self):
+        """缩放后重排已有消息（不重新渲染，Tk 在拖拽中重绘会卡）。"""
+        try:
+            w = max(self.root.winfo_width() - 90, 120)
+            self.canvas.itemconfigure(self.inner_id, width=self.canvas.winfo_width())
+            for lbl in self._wrap_lbls:
+                lbl.config(wraplength=w)
+        except Exception:
             pass
 
     def toggle(self):
@@ -468,10 +600,11 @@ class DanmuPanel:
                        wraplength=max(self.root.winfo_width() - 80, 200),
                        font=("Microsoft YaHei UI", int(self.cfg.get("font_size", 12))))
         lbl.pack(fill="x", anchor="w")
+        self._wrap_lbls.append(lbl)
+        if len(self._wrap_lbls) > self.max_msgs * 2:
+            self._wrap_lbls.pop(0)
         for w in (row, body, head):
-            w.bind("<Button-1>", self._drag_start)
-            w.bind("<B1-Motion>", self._drag)
-            w.bind("<ButtonRelease-1>", self._drag_end)
+            self._wire(w)
             w.bind("<MouseWheel>", self._wheel)
 
         self.rows.append(row)
@@ -573,8 +706,11 @@ def main():
     ap.add_argument("--side", default=None, choices=["left", "right"], help="贴窗口左边还是右边")
     ap.add_argument("--screen", type=int, default=None, help="不跟窗口时投到第几块屏幕（0 起）")
     ap.add_argument("--free", action="store_true", help="不跟随窗口")
+    ap.add_argument("--size", type=int, default=None, help="初始边长/宽度（像素）")
+    ap.add_argument("--size-mode", default=None, choices=["square", "free"],
+                    help="square=拉伸时保持正方形；free=宽高各自拉")
     ap.add_argument("--test", action="store_true")
-    ap.add_argument("--port", type=int, default=0)
+    ap.add_argument("--port", type=int, default=0, help="收推送的本地端口（默认取 config）")
     ap.add_argument("--emit", default="")
     ap.add_argument("--cfg", default=os.path.join(here, "config.json"))
     a = ap.parse_args()
@@ -590,6 +726,10 @@ def main():
         return
     if a.free:
         cfg["attach"] = "free"
+    if a.size:
+        cfg["size"] = a.size
+    if a.size_mode:
+        cfg["size_mode"] = a.size_mode
     host = cfg.get("host_title", "") if a.host is None else a.host
     if a.side:
         cfg["side"] = a.side
