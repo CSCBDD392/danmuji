@@ -50,15 +50,29 @@ python main.py --gui
 python danmu.py --host "哔哩哔哩"        :: 贴到标题含「哔哩哔哩」的窗口上
 python danmu.py --host "" --screen 1    :: 不跟窗口，投到第 2 块屏
 python danmu.py --host "PotPlayer" --app PotPlayerMini64.exe --side left
+python danmu.py --size 620              :: 初始边长 620
+python danmu.py --size-mode free        :: 拉伸时宽高各自变（默认 square 保持正方形）
 ```
 
-- **形状**：正方形，边长 = 目标窗口当前高度；目标窗口缩放时自动跟着变。
-- **位置**：默认压在目标窗口**右边缘内侧**，`--side left` 换左边。
-- **自由移动**：左键按住面板任意处拖动，拖过之后就不再自动吸附（想恢复就重启面板）。
-  拖到别的抽屉、别的屏幕上都可以。
-- **关闭**：右键或双击；`Ctrl+Alt+D` 隐藏/显示；`Ctrl+Alt+Q` 关闭。
-- `config.json → danmu` 可调：`side`、`screen`、`alpha` 透明度、`bg` 底色、
-  `font_size` 字号、`max_msgs` 保留多少条、`avatar` 头像开关、`show_events` 事件行开关。
+### 鼠标操作
+
+| 操作 | 效果 |
+| --- | --- |
+| 拖标题条 / 任意空白处 | 移动面板（拖到任意屏幕都行） |
+| 鼠标移到**上/下/左/右边框**，出现双向箭头后拖动 | 拉高 / 拉矮 / 往左拉宽 / 往右拉宽 |
+| 拖**四个角** | 同时改宽高 |
+| 右键 / 双击 / `Esc` | 关闭面板 |
+| `Ctrl+Alt+D` / `Ctrl+Alt+Q` | 显示隐藏 / 关闭 |
+
+- **宽高可自由调整**：`size_mode` 为 `square` 时，从任意一条边拉伸都保持正方形；
+  设成 `free` 后宽高各自独立拉伸（可以拉成细长条）。
+- **往左延伸**：抓住左边框往左拖，右侧位置不动，宽度变大；往右延伸同理抓右边框。
+- **吸附**：默认正方形边长 = 目标窗口高度，压在目标窗口右边缘内侧，`--side left` 换左边。
+  目标窗口移动/缩放时面板自动跟随，直到你亲手拖动过它为止。
+- 最小尺寸 `min_width` / `min_height`（默认 260 / 160），`edge_margin` 可让面板与窗口边缘留点缝。
+- `config.json → danmu` 可调：`side`、`size_mode`、`size`、`min_width`、`min_height`、
+  `edge_margin`、`screen`、`alpha` 透明度、`bg` 底色、`font_size` 字号、
+  `max_msgs` 保留多少条、`toggle_hotkey`、`quit_hotkey`。
 - 面板是独立进程，通过 `127.0.0.1:9701` 收推送，点歌机重开不影响它：
   ```bat
   python danmu.py --emit "测试一条"
