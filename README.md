@@ -22,12 +22,12 @@ PC 端两只小工具，配套使用：
 
 ## 快速开始
 
-需要 Windows + Python 3.8+，浏览器装有 Edge 或 Chrome。
+需要 Windows + Python 3.8+，以及 **Node.js 18+**（内置酷狗引擎用；装不了也能用，会自动退回网页版）。
 
 ```bat
 pip install -r requirements.txt
-set live.room=              :: 在 config.json 里填你的直播间号
 python main.py --gui
+python main.py --setup        :: 想重新选「登录 VIP / 只用免费歌」时
 ```
 
 `--gui` 会弹出小控制窗：填房间号、选面板贴哪边、点「开始」即可。
@@ -39,7 +39,8 @@ python main.py --gui
 | `python main.py` | 正常模式：连 B 站弹幕 + 自动拉起弹幕面板 |
 | `python main.py --gui` | 控制窗（推荐日常用） |
 | `python main.py --panel` | 只开弹幕面板，不管点歌 |
-| `python main.py --once 晴天` | 只测一首歌能不能在酷狗里播出来 |
+| `python main.py --setup` | 重新走首次运行向导（酷狗 VIP 登录提示） |
+| `python main.py --once 晴天` | 只测一首歌能不能放出来 |
 | `python main.py --offline` | 不连 B 站，用键盘输入模拟弹幕（调试） |
 | `python danmu.py --test` | 面板演示模式（假弹幕，看效果用） |
 | `python test_all.py` | 离线自测，应输出 `FAILED: 0` |
@@ -108,42 +109,69 @@ python danmu.py --size-mode free        :: 拉伸时宽高各自变（默认 squ
 
 ### 酷狗播放是怎么实现的
 
-不逆向、不盗链，就是**真的开一个酷狗网页版页面去播放**：
+默认走**内置酷狗引擎**（本地 API，`127.0.0.1:4000`），完全不碰浏览器：
 
-1. 用 CDP 启动一个独立 profile 的 Edge/Chrome（端口 `9333`，profile 在 `~/.danmuji/kugou-profile`），
-   可正常登录酷狗，登录态会保留。
-2. 先用酷狗公开搜索接口选最匹配的一首（标题+歌手打分，避开 Live/伴奏/翻唱）。
-3. 打开 `https://www.kugou.com/mixsong/<id>.html` 播放页，直接调页面自己的播放接口；
-   浏览器策略拦自动播放时，会补一次模拟点击；再不行就把页面切到前台，点一下就能放。
+1. 启动时探测 `127.0.0.1:4000`，没有就自动拉起 `vendor/kugou-api/`（需要机器上有 Node.js）。
+2. 首次运行自动向酷狗登记一个**设备指纹 `dfid`**（`/register/dev`）。这一步很关键——
+   没登记过的设备去取播放地址会被回 `20028 本次请求需要验证`，连免费歌都放不了。
+3. 搜索 → 打分挑歌 → 取直链 → 下载到 `~/.danmuji/cache/` → 用 `winsound` 本地播放。
 
-> 付费/无版权歌曲酷狗本来就不给放，面板里会提示「暂时放不了」。
-> 第一次用建议先手动在面板里登录酷狗一次（`python main.py --once 晴天` 会打开浏览器）。
+取不到直链时才退回**网页版**：用 CDP 开一个独立 profile 的 Edge/Chrome（端口 `9333`）。
+
+> **免费 / 付费**：免费歌返回完整版；付费歌无 VIP 时只返回 60 秒试听片段。
+> 程序会自动跳过试听、先找同名的免费完整版（比如周杰伦原版不行就放翻唱完整版）；
+> 实在只有试听就播试听并提示一次。想听原版完整曲目 → 登录酷狗 VIP。
+
+### 首次运行的 VIP 提示
+
+第一次启动会弹出提示（`python main.py --setup` 可再次调出）：
+
+```
+目前已部署完毕，但只支持免费歌曲。
+
+如果你点歌需要付费歌曲的话，请登录你的酷狗VIP账号。
+```
+
+- 选 **是（Y）**：弹出二维码，用酷狗 App 扫码登录，登录态存在本地。
+- 选 **否（N）**：跳过，只用免费歌曲。
+- 选择结果记在 `config.local.json` 的 `kugou_api.setup_done`，之后不再打扰。
 
 ## 分发给别人 / 杀软误报
 
 - 全部是**纯 Python 源码**，`pip install` 后直接跑，不打包 exe —— 这是最不容易被误报的形态。
-- 不写注册表、不装服务、不加自启动；后台只有本机的 `127.0.0.1:9701` 和一个 `9333` 调试端口。
-- 外连域名只有：`api.bilibili.com`、`live.bilibili.com`、`songsearch.kugou.com`、`www.kugou.com`。
+- 不写注册表、不装服务、不加自启动；后台只有本机的 `127.0.0.1:9701`（面板）、
+  `127.0.0.1:4000`（酷狗引擎）和按需的 `9333`（网页版兜底）。
+- 外连域名只有：`api.bilibili.com`、`live.bilibili.com`、`songsearch.kugou.com`、
+  `www.kugou.com`、`userservice.kugou.com`、`fs.youthandroid*.kugou.com`（音频 CDN）。
+- **酷狗引擎只监听 127.0.0.1，不需要公网、不需要隧道**。点歌机和它是同一台机器上的两个进程，
+  走回环地址就够了。每台机器首次运行会各自领一个设备指纹，互不影响。
 - 如果一定要打包成 exe：用 PyInstaller **不开 UPX、不混淆**，体积大一点的「一体式」包反而更少被报毒；
   发出去之前先传到 VirusTotal 看看，别用在线「加壳」服务。
-- 别把带你自己 Cookie 的 `config.json`、`.github-token` 发给别人。
+- 别把带你自己 `sessdata` / 酷狗登录态的 `config.local.json` 发给别人。
 
 ## 文件说明
 
 | 文件 | 作用 |
 | --- | --- |
-| `main.py` | 主程序：弹幕→点歌分发、播放队列、拉起面板、GUI 入口 |
-| `danmu.py` | 正方形弹幕面板（tkinter 无边框窗口 + Win32 窗口吸附） |
+| `main.py` | 主程序：弹幕→点歌分发、播放队列、首次运行向导、拉起面板、GUI 入口 |
+| `danmu.py` | 正方形弹幕面板（tkinter 无边框窗口 + Win32 窗口吸附/拉伸） |
 | `gui.py` | 小控制窗 |
 | `bili.py` | B 站弹幕 WebSocket（zlib/brotli 解包、心跳、重连、wbi 签名） |
-| `kugou.py` | 酷狗搜索 + CDP 打开播放页并播放 |
+| `kgapi.py` | 内置酷狗引擎的托管：探活、自动拉起、设备指纹、搜索、取直链、扫码登录 |
+| `audio.py` | 下载音频到本地缓存并播放 |
+| `setup.py` | 首次运行向导（「登录 VIP？」是/否） |
+| `kugou.py` | 酷狗网页版兜底（CDP 打开播放页） |
 | `cdp.py` | 极简 Chrome DevTools Protocol 客户端（只用标准库 websocket） |
-| `page.js` / `_gen_page.py` | 页面内执行的小脚本及其生成器 |
+| `vendor/kugou-api/` | 内置酷狗引擎（Node.js，仅监听 127.0.0.1:4000） |
+| `winutil.py` | Win32 窗口查找/屏幕尺寸 |
 | `publish_github.py` | 一键发布到 GitHub（只用 REST API，不需要 git） |
 
 ## 常见问题
 
 - **面板没出现**：目标窗口标题没匹配上（`--host` 是子串匹配），或窗口被最小化；
   不跟窗口时用 `--screen 0` 固定到屏幕。
-- **有弹幕但没声**：酷狗需要登录或该曲付费；面板会提示，点「下一首」继续。
-- **端口被占用**：面板默认 9701，酷狗调试口 9333，可在 `config.json` 里改。
+- **点歌没声 / 提示「本次请求需要验证」**：设备指纹失效或被限流。删掉 `config.local.json`
+  里的 `kugou_api.dfid` 再启动，会自动重新登记一个；连续失败就等 90 秒。
+- **提示「只有试听片段」**：这首是付费歌，免费额度只给 60 秒。用 `--setup` 登录酷狗 VIP。
+- **没有 Node.js**：内置引擎起不来，会自动退回网页版（效果差一些，付费歌可能完全放不了）。
+- **端口被占用**：面板 9701、酷狗引擎 4000、网页版调试口 9333，都在 `config.json` 里可改。
