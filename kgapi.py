@@ -74,6 +74,7 @@ class KugouEngine:
 
     def __init__(self, cfg):
         c = (cfg or {}).get("kugou_api") or {}
+        self._cfg = cfg
         self.enabled = c.get("enabled", True)
         self.host = c.get("host", "127.0.0.1")
         self.port = int(c.get("port", 4000))
@@ -82,6 +83,7 @@ class KugouEngine:
         self.extra_args = list(c.get("args") or [])
         self.start_timeout = float(c.get("start_timeout", 25))
         self.dfid = c.get("dfid") or ""
+        self.uuid = c.get("uuid") or ""
         self.token = c.get("token") or ""
         self.userid = c.get("userid") or ""
         self.cookie = c.get("cookie") or ""
@@ -132,20 +134,58 @@ class KugouEngine:
             except Exception:
                 return False
 
+    def alive(self):
+        """给聚合层用：服务在不在。不负责拉起，拉起的活儿归 ensure()。"""
+        return self._looks_alive()
+
+    def _persist(self):
+        """把 dfid/token 落盘，下次启动别再重新注册（每次注册都会被风控盯上）。"""
+        cfg = self._cfg
+        if not isinstance(cfg, dict):
+            return
+        kc = cfg.setdefault("kugou_api", {})
+        kc["dfid"] = self.dfid
+        kc["uuid"] = self.uuid
+        if self.token:
+            kc["token"] = self.token
+        if self.userid:
+            kc["userid"] = self.userid
+        try:
+            with open(os.path.join(HERE, "config.local.json"), "w",
+                      encoding="utf-8") as f:
+                json.dump(cfg, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            log.warning("保存设备指纹失败：%s", e)
+
     def ensure_dfid(self, force=False):
         """确保有一个可用的设备指纹（dfid）。
 
         酷狗会对没登记过的设备指纹返回 20028「本次请求需要验证」，连免费歌都
         放不了。所以首次运行先调 /register/dev 领一个，存进配置里长期复用。
+
+        上游这个接口把设备 uuid 当必填（没给就 uuid=undefined，服务端直接
+        返回空 data），所以这里必须带一个稳定的 uuid 上去。
         """
         if self.dfid and not force:
             return self.dfid
+        if not self.uuid:
+            # 一个机器一个 uuid，别每次变（换了又得重新登记）
+            import uuid as _uuid
+            self.uuid = _uuid.uuid4().hex
         try:
-            code, body = self.get("/register/dev", timeout=25)
+            # 上游把 uuid 从 cookie.KUGOU_API_GUID 里取，不给就 uuid=undefined，
+            # 服务端会直接返回空 data（{"status":1,"data":[]}）。所以必须带上。
+            old_cookie = self.cookie
+            self.cookie = "KUGOU_API_GUID=%s" % self.uuid
+            try:
+                code, body = self.get("/register/dev", timeout=25)
+            finally:
+                self.cookie = old_cookie
             d = json.loads(body)
             if d.get("status") == 1 and (d.get("data") or {}).get("dfid"):
                 self.dfid = d["data"]["dfid"]
                 log.info("已注册新设备指纹 dfid=%s", self.dfid)
+                self._persist()
                 return self.dfid
             log.warning("注册设备指纹失败：%s", str(body)[:120])
         except Exception as e:
