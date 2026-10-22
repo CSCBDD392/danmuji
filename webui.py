@@ -194,6 +194,10 @@ class Handler(BaseHTTPRequestHandler):
             r = RUNNER.start(want_player=data.get("player", True),
                              want_panel=data.get("panel", True))
             self._json({"ok": True, "running": r})
+        elif path == "/api/test-danmu":
+            room = (data.get("room") or "").strip()
+            secs = min(int(data.get("secs") or 12), 30)
+            self._json(_test_danmu(room, secs))
         elif path == "/api/stop":
             RUNNER.stop()
             self._json({"ok": True})
@@ -207,6 +211,47 @@ def _has_tk():
         return True
     except Exception:
         return False
+
+
+def _test_danmu(room, secs):
+    """连一次弹幕，数几秒内收到几条。给 WebUI 的「测试」按钮用。"""
+    if not room:
+        return {"ok": False, "msg": "没填房间号", "count": 0}
+    cfg = load_cfg()
+    sessdata = ((cfg.get("live") or {}).get("sessdata") or "").strip()
+    if not sessdata:
+        return {"ok": False, "count": 0,
+                "msg": "没填 SESSDATA —— B 站匿名请求会被 -352 拦掉，填完再测"}
+
+    try:
+        import bili
+    except Exception as e:
+        return {"ok": False, "count": 0, "msg": "加载 bili 失败：%s" % e}
+    import time as _t
+
+    got = [0]
+    try:
+        rid = bili.room_id(room)
+    except Exception:
+        return {"ok": False, "count": 0, "msg": "房间号看起来不对：%s" % room}
+
+    def cb(kind, payload):
+        got[0] += 1
+
+    try:
+        th = bili.BiliDanmaku(room, sessdata, cb)
+        th.start()
+        end = _t.time() + secs
+        while _t.time() < end:
+            _t.sleep(0.3)
+        th.stop()
+    except Exception as e:
+        return {"ok": False, "count": got[0], "msg": "连接出错：%s" % e}
+
+    if got[0] > 0:
+        return {"ok": True, "count": got[0], "msg": ""}
+    return {"ok": False, "count": 0,
+            "msg": "%d 秒内一条都没收到。SESSDATA 可能过期了，或这个房间没人说话，换个热门房间再试" % secs}
 
 
 def main():

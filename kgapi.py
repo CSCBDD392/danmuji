@@ -40,8 +40,15 @@ def _port_open(host, port, timeout=0.35):
 
 
 def _node_exe():
-    for p in (os.path.join(HERE, "vendor", "kugou-api", "node.exe"),
-              r"C:\Program Files\nodejs\node.exe",
+    """内置的 node.exe 优先 —— 用户机器上不需要装 Node。
+
+    内置的那个是大文件，放 GitHub Release，第一次用会由 tools/get_runtime.py
+    自动下载；下不了就退回系统装好的 Node。
+    """
+    bundled = os.path.join(HERE, "vendor", "kugou-api", "node.exe")
+    if os.path.isfile(bundled):
+        return bundled
+    for p in (r"C:\Program Files\nodejs\node.exe",
               r"C:\Program Files (x86)\nodejs\node.exe",
               os.path.expandvars(r"%LOCALAPPDATA%\Programs\nodejs\node.exe")):
         if os.path.isfile(p):
@@ -52,6 +59,28 @@ def _node_exe():
             if os.path.isfile(f):
                 return f
     return None
+
+
+def ensure_runtime():
+    """确认内置 node.exe 在；不在就下。返回路径或 None。"""
+    if _node_exe():
+        return _node_exe()
+    try:
+        from tools import get_runtime
+    except Exception:
+        try:
+            sys.path.insert(0, os.path.join(HERE, "tools"))
+            import get_runtime
+        except Exception as e:
+            log.debug("加载 get_runtime 失败: %s", e)
+            return None
+    p = get_runtime.ensure_node()
+    return p
+
+
+def _node_is_bundled(path):
+    return bool(path) and os.path.normcase(path).startswith(
+        os.path.normcase(os.path.join(HERE, "vendor")))
 
 
 def _patch_upstream(root):
@@ -207,7 +236,8 @@ class KugouEngine:
                 return True
             if self._proc is not None and self._proc.poll() is None:
                 return False
-            node = _node_exe()
+            # 内置 node.exe 缺失时自动下载（只发生一次；下不了就退回系统 Node）
+            node = ensure_runtime()
             app = os.path.join(self.root, "app.js")
             if not node or not os.path.isfile(app):
                 log.info("没找到内置酷狗 API（node=%s, app=%s）", bool(node), os.path.isfile(app))

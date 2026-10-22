@@ -114,14 +114,21 @@
     <div class="row">
       <label>SESSDATA</label>
       <div class="pw">
-        <input type="password" id="sessdata" placeholder="B 站登录凭据，不填可能连不上弹幕">
+        <input type="password" id="sessdata" placeholder="B 站登录凭据，不填连不上弹幕">
         <button class="eye" id="eye" type="button">显示</button>
       </div>
+    </div>
+    <div class="row">
+      <label></label>
+      <button class="ghost" id="btnTest" type="button" style="padding:8px 16px;font-size:13px">
+        测试能不能收到弹幕
+      </button>
+      <span class="metric" id="testResult"></span>
     </div>
     <div class="hint">
       B 站现在对<b>匿名请求</b>的弹幕接口返回 <code>-352</code>，必须填 SESSDATA。
       取法：浏览器登录 bilibili.com → F12 → Application → Cookies →
-      复制 <code>SESSDATA</code> 的 Value。<br>
+      复制 <code>SESSDATA</code> 的 Value（只填 Value，别带 <code>SESSDATA=</code>）。<br>
       只存在本机 <code>config.local.json</code>，不会上传。
     </div>
   </div>
@@ -285,6 +292,41 @@ $("#btnStop").onclick = async () => {
   await api("/api/stop", {});
   toast("■ 已停止");
   refresh();
+};
+
+/* ---------- 测弹幕连通性 ---------- */
+let testing = false;
+$("#btnTest").onclick = async () => {
+  if (testing) return;
+  testing = true;
+  const btn = $("#btnTest"), out = $("#testResult");
+  const sd = $("#sessdata").value.trim();
+  btn.disabled = true;
+
+  if (!sd) {
+    out.textContent = "先填 SESSDATA";
+    btn.disabled = false; testing = false;
+    return;
+  }
+
+  out.textContent = "正在连接…";
+  try {
+    // 先把填的值存下来，测试用的就是这份
+    await api("/api/save", {patch: collect()});
+    const r = await api("/api/test-danmu", {room: $("#room").value.trim(), secs: 12});
+    if (r.ok) {
+      out.innerHTML = "✅ 通了，收到 <b>" + r.count + "</b> 条弹幕";
+      toast("✅ 弹幕连通");
+    } else {
+      out.textContent = "❌ " + r.msg;
+      toast("❌ " + r.msg);
+    }
+  } catch (e) {
+    out.textContent = "❌ 测试失败：" + e;
+  } finally {
+    btn.disabled = false;
+    testing = false;
+  }
 };
 
 /* ---------- 初始化 ---------- */
