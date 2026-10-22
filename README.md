@@ -43,6 +43,17 @@ PC 端两只小工具：**一个聚合入口，两个各自能独立跑的东西
 
 需要 Windows + Python 3.8+，以及 **Node.js 18+**（内置酷狗引擎用；装不了也能用，会自动退回网页版）。
 
+> **第一次用，推荐走 WebUI** —— 不用改文件、不用记命令，浏览器里填完点「开始运行」就行：
+>
+> ```bat
+> python webui.py --open
+> ```
+>
+> 它会打开 `http://127.0.0.1:9700/`，里面能填房间号、SESSDATA、面板贴哪边、开哪几家音乐源。
+> 页面是**零依赖**的（只用 Python 标准库），拷到别的电脑上照样能跑。
+
+命令行方式：
+
 ```bat
 pip install -r requirements.txt
 python main.py --gui
@@ -51,10 +62,28 @@ python main.py --setup        :: 想重新选「登录 VIP / 只用免费歌」�
 
 `--gui` 会弹出小控制窗：填房间号、选面板贴哪边、点「开始」即可。
 
+### WebUI 面板
+
+| 项 | 说明 |
+| --- | --- |
+| 房间号 | 直播间号，也可以直接粘贴直播间链接 |
+| SESSDATA | **必填**，否则 B 站弹幕接口返回 `-352` |
+| 贴哪个窗口 | 窗口标题片段；留空就是贴在屏幕边上 |
+| 贴哪一侧 / 大小 | 右边或左边、面板边长（像素） |
+| 音乐源 | 勾选的都会搜，越靠前越优先 |
+
+配置写进 `config.local.json`（**不进 Git**，不会覆盖 `config.json`）。关掉网页不影响运行，
+点「停止」才会真的把进程停掉。
+
+SESSDATA 怎么拿：浏览器登录 bilibili.com → F12 → Application → Cookies →
+`https://www.bilibili.com` → 复制 `SESSDATA` 的 Value。只填 Value，不要带 `SESSDATA=`。
+它是账号凭据，**别贴给别人**。
+
 其它入口：
 
 | 命令 | 作用 |
 | --- | --- |
+| `python webui.py --open` | **网页控制台**（推荐）：浏览器里填配置、一键启停 |
 | `python app.py` | **聚合**：点歌机 + 弹幕面板一起起 |
 | `python app.py --gui` | 控制窗（推荐日常用），面板和点歌都能从里面开关 |
 | `python app.py --no-player` | 只要弹幕面板 |
@@ -224,6 +253,7 @@ python main.py --sources --once 晴天
 | 文件 | 作用 |
 | --- | --- |
 | `main.py` | 主程序：弹幕→点歌分发、播放队列、首次运行向导、拉起面板、GUI 入口 |
+| `webui.py` / `webui.html` | 网页控制台（纯标准库，零依赖）：填配置、一键启停 |
 | `danmu.py` | 正方形弹幕面板（tkinter 无边框窗口 + Win32 窗口吸附/拉伸） |
 | `gui.py` | 小控制窗 |
 | `bili.py` | B 站弹幕 WebSocket（zlib/brotli 解包、心跳、重连、wbi 签名） |
@@ -240,6 +270,10 @@ python main.py --sources --once 晴天
 
 ## 常见问题
 
+- **弹幕一条都收不到 / 日志刷 `-352`**：这就是没填 SESSDATA。B 站现在对匿名请求的
+  `getDanmuInfo` 一律返回 `-352`，公共弹幕服务器虽然连得上但收不到内容。
+  用 `python webui.py` 在网页里填，或写进 `config.local.json` 的 `live.sessdata`。
+  填完可以先用 `python main.py --test-danmu 7734200` 验证，能看到「共收到 N 条」就成了。
 - **面板没出现**：目标窗口标题没匹配上（`--host` 是子串匹配），或窗口被最小化；
   不跟窗口时用 `--screen 0` 固定到屏幕。
 - **点歌没声 / 提示「本次请求需要验证」**：设备指纹失效或被限流。删掉 `config.local.json`
