@@ -14,18 +14,29 @@
     "root": "",
     "start_timeout": 30,
     "retry_backoff_sec": 90,
-    "dfid": "",
+    "dfid": "3we50V1qfWos40ZHjj2N5wAi",
     "token": "",
     "userid": "",
-    "setup_done": false
+    "setup_done": true,
+    "uuid": "a5ca83029f634ba4a280cb602bd39a0c"
   },
   "music": {
     "host": "127.0.0.1",
-    "order": ["kugou", "netease", "qq"],
+    "order": [
+      "kugou",
+      "netease",
+      "qq"
+    ],
     "per_source": 6,
     "try_limit": 6,
-    "netease": {"enabled": true, "port": 3000},
-    "qq": {"enabled": true, "port": 3300}
+    "netease": {
+      "enabled": true,
+      "port": 3001
+    },
+    "qq": {
+      "enabled": true,
+      "port": 3301
+    }
   },
   "kugou": {
     "cdp_port": 9333,
