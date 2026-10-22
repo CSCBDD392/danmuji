@@ -20,6 +20,7 @@ import threading
 import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import auth
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CFG_MAIN = os.path.join(HERE, "config.json")
@@ -27,6 +28,24 @@ CFG_LOCAL = os.path.join(HERE, "config.local.json")
 PAGE = os.path.join(HERE, "webui.html")
 
 DEFAULT_PORT = 9700
+
+AUTH_PAGE = """<!doctype html><meta charset="utf-8">
+<title>需要口令 · 弹幕点歌机</title>
+<style>
+ body{font-family:system-ui,-apple-system,"Segoe UI",sans-serif;background:#0f1115;color:#e8eaed;
+      display:flex;align-items:center;justify-content:center;height:100vh;margin:0}
+ .box{background:#181b21;padding:36px 40px;border-radius:14px;border:1px solid #262a33;max-width:520px}
+ h1{font-size:20px;margin:0 0 14px}p{color:#8b93a3;line-height:1.7;margin:0 0 10px;font-size:14px}
+ code{background:#22262e;padding:2px 6px;border-radius:4px;color:#7c9cff}
+ .err{color:#ff8a80;margin-top:16px;font-size:13px}
+</style>
+<div class="box">
+ <h1>🔒 需要访问口令</h1>
+ <p>这个页面已经从公网暴露，所以要口令才能进。</p>
+ <p>口令在服务器上的 <code>config.local.json</code> 里，字段 <code>webui.token</code>。</p>
+ <p>在地址后面加上 <code>?t=口令</code> 再打开一次，之后浏览器会记住。</p>
+ <div class="err">%s</div>
+</div>"""
 
 
 def _read_json(path):
@@ -131,6 +150,8 @@ RUNNER = Runner()
 
 
 class Handler(BaseHTTPRequestHandler):
+    _extra_cookie = ""
+
     def log_message(self, fmt, *args):
         pass    # 安静点，别刷屏
 
@@ -141,6 +162,9 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        if self._extra_cookie:
+            self.send_header("Set-Cookie", self._extra_cookie)
+            self._extra_cookie = ""
         self.end_headers()
         self.wfile.write(body)
 
@@ -158,8 +182,16 @@ class Handler(BaseHTTPRequestHandler):
 
     # ---------------- 路由 ----------------
     def do_GET(self):
-        path = urllib.parse.urlparse(self.path).path
+        u = urllib.parse.urlparse(self.path)
+        path = u.path
+        ok, why, sc = self._auth(u)
+        if not ok:
+            self._send(401, AUTH_PAGE % {"why": why} if path in ("/", "/index.html", "/webui")
+                       else why, "text/html; charset=utf-8")
+            return
         if path in ("/", "/index.html", "/webui"):
+            if sc:
+                self._extra_cookie = sc
             if os.path.exists(PAGE):
                 with open(PAGE, "rb") as f:
                     self._send(200, f.read(), "text/html; charset=utf-8")
@@ -175,14 +207,44 @@ class Handler(BaseHTTPRequestHandler):
                 "panel_up": _port_up((cfg.get("danmu") or {}).get("port", 9701)),
                 "python": sys.executable,
                 "has_tk": _has_tk(),
+                "token": (cfg.get("webui") or {}).get("token", ""),
             })
         elif path == "/favicon.ico":
             self._send(204, b"")
         else:
             self._send(404, "not found", "text/plain; charset=utf-8")
 
+    def _auth(self, u):
+        """统一鉴权。返回 (ok, 原因, 要种的 cookie)。
+
+        注意：从 CF 隧道进来的请求，源地址一定是 127.0.0.1（cloudflared 在本机），
+        直接看 client_address 会把全世界都当成「本机」放行。
+        所以优先信 CF-Connecting-IP / X-Forwarded-For。
+        """
+        q = urllib.parse.parse_qs(u.query)
+        cfg = load_cfg()
+        tok = (cfg.get("webui") or {}).get("token") or ""
+        ip = self._real_ip()
+        return auth.check(self.headers, q, ip, tok, self.headers.get("Cookie", ""))
+
+    def _real_ip(self):
+        """真实客户端 IP。有 CF 头就用 CF 头，没有才用 TCP 对端。"""
+        for hdr in ("CF-Connecting-IP", "X-Real-IP"):
+            v = (self.headers.get(hdr) or "").strip()
+            if v:
+                return v
+        xff = (self.headers.get("X-Forwarded-For") or "").strip()
+        if xff:
+            return xff.split(",")[0].strip()
+        return self.client_address[0] if self.client_address else ""
+
     def do_POST(self):
-        path = urllib.parse.urlparse(self.path).path
+        u = urllib.parse.urlparse(self.path)
+        path = u.path
+        ok, why, _ = self._auth(u)
+        if not ok:
+            self._json({"ok": False, "err": why}, 401)
+            return
         data = self._body()
         if path == "/api/save":
             try:
@@ -263,8 +325,22 @@ def main():
     a = ap.parse_args()
 
     srv = ThreadingHTTPServer((a.host, a.port), Handler)
+
+    # 暴露到公网必须口令；第一次启动自动生成并写进 config.local.json
+    cfg = load_cfg()
+    tok = (cfg.get("webui") or {}).get("token") or ""
+    if not tok:
+        tok = auth.ensure_token(cfg)
+        save_local({"webui": {"token": tok}})
+        print("已生成访问口令并写入 config.local.json：")
+        print("    %s" % tok)
+    else:
+        print("访问口令：%s" % tok)
+
     url = "http://%s:%d/" % ("127.0.0.1" if a.host in ("0.0.0.0", "") else a.host, a.port)
     print("WebUI 已启动：%s" % url)
+    print("  本机直接打开不用口令：%s" % url)
+    print("  外网/局域网打开要带口令：%s?t=%s" % (url, tok))
     print("配置文件：%s" % CFG_LOCAL)
     if a.open:
         try:

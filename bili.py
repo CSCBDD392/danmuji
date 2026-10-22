@@ -92,8 +92,11 @@ class Bili:
     def __init__(self, sessdata=""):
         self.s = requests.Session()
         self.s.headers.update(HEADERS)
-        if sessdata:
-            self.s.cookies.set("SESSDATA", sessdata, domain=".bilibili.com")
+        self.sessdata = (sessdata or "").strip()
+        if self.sessdata:
+            self.s.cookies.set("SESSDATA", self.sessdata, domain=".bilibili.com")
+        self._token_ok = False
+        self._token_warned = False   # 风控提示只打一次，别每 5 秒刷屏
 
     def _get(self, url, **kw):
         r = self.s.get(url, timeout=10, **kw)

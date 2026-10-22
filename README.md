@@ -41,7 +41,16 @@ PC 端两只小工具：**一个聚合入口，两个各自能独立跑的东西
 
 ## 快速开始
 
-需要 Windows + Python 3.8+，以及 **Node.js 18+**（内置酷狗引擎用；装不了也能用，会自动退回网页版）。
+只需要 **Windows + Python 3.8+**。
+
+> **不需要你装 Node.js。** 酷狗引擎用的 `node.exe` 内置在项目里，
+> 它以 Release 附件的形式提供（90MB 塞不进 Git 仓库），
+> 第一次运行时 `tools/get_runtime.py` 会**自动下载**到你本地。
+> 只有下载失败又没装 Node 时，才会退回酷狗网页版播放。
+
+```bat
+pip install -r requirements.txt
+```
 
 > **第一次用，推荐走 WebUI** —— 不用改文件、不用记命令，浏览器里填完点「开始运行」就行：
 >
@@ -55,7 +64,6 @@ PC 端两只小工具：**一个聚合入口，两个各自能独立跑的东西
 命令行方式：
 
 ```bat
-pip install -r requirements.txt
 python main.py --gui
 python main.py --setup        :: 想重新选「登录 VIP / 只用免费歌」时
 ```
@@ -68,6 +76,7 @@ python main.py --setup        :: 想重新选「登录 VIP / 只用免费歌」�
 | --- | --- |
 | 房间号 | 直播间号，也可以直接粘贴直播间链接 |
 | SESSDATA | **必填**，否则 B 站弹幕接口返回 `-352` |
+| 测试能不能收到弹幕 | 填完 SESSDATA 点一下，12 秒内收到几条会直接告诉你 |
 | 贴哪个窗口 | 窗口标题片段；留空就是贴在屏幕边上 |
 | 贴哪一侧 / 大小 | 右边或左边、面板边长（像素） |
 | 音乐源 | 勾选的都会搜，越靠前越优先 |
@@ -77,7 +86,13 @@ python main.py --setup        :: 想重新选「登录 VIP / 只用免费歌」�
 
 SESSDATA 怎么拿：浏览器登录 bilibili.com → F12 → Application → Cookies →
 `https://www.bilibili.com` → 复制 `SESSDATA` 的 Value。只填 Value，不要带 `SESSDATA=`。
-它是账号凭据，**别贴给别人**。
+它是账号凭据，**别贴给别人**。装了 [Cookie-Editor](https://microsoftedge.microsoft.com/addons/search?hl=zh-CN&q=Cookie-Editor)
+之类的插件会更省事。
+
+> **为什么必须填 SESSDATA**：B 站现在对**匿名请求**的弹幕接口
+> (`xlive/web-room/v1/index/getDanmuInfo`) 一律返回 `-352`。
+> 实测无 UA → `412`，普通 UA → `-352`，加上 Referer/buvid3/WBI 签名仍然是 `-352`。
+> 换成登录态之后才能拿到 token，所以这个字段是弹幕机的命门。
 
 其它入口：
 
