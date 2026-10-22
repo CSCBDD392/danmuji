@@ -149,13 +149,28 @@ def ui_imports():
     assert danmu.find_window("这个窗口标题一定不存在_zz") is None
 
 
+def webui_ready():
+    # WebUI 是给别人用的第一入口，页面缺了或配置合并坏了就等于不能用
+    import webui
+    assert os.path.exists(webui.PAGE), "webui.html 不见了"
+    with open(webui.PAGE, encoding="utf-8") as f:
+        html = f.read()
+    for key in ("/api/state", "/api/save", "/api/start", "/api/stop", "SESSDATA"):
+        assert key in html, "webui.html 里缺 %s" % key
+    # 深合并：小配置不能把大配置的兄弟键吃掉
+    base = {"a": {"x": 1, "y": 2}, "b": 3}
+    merged = webui._deep_merge(base, {"a": {"y": 9}})
+    assert merged == {"a": {"x": 1, "y": 9}, "b": 3}, merged
+    assert base["a"]["y"] == 2, "不能就地改原字典"
+
+
 if __name__ == "__main__":
     for n, f in [("parse_orders", parse_orders), ("wbi_sign", wbi_sign),
                  ("danmaku_packet", danmaku_packet), ("page_js", page_js),
                  ("order_re_filter", order_re_filter), ("config_keys", config_keys),
                  ("source_score", source_score), ("source_adapters", source_adapters),
                  ("audio_guard", audio_guard),
-                 ("ui_imports", ui_imports)]:
+                 ("ui_imports", ui_imports), ("webui_ready", webui_ready)]:
         t(n, f)
     print("FAILED:", globals().get("FAILED", 0))
     sys.exit(1 if globals().get("FAILED") else 0)
