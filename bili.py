@@ -14,10 +14,21 @@ log = logging.getLogger("bili")
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                  "(KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+                  "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
     "Referer": "https://live.bilibili.com/",
     "Origin": "https://live.bilibili.com",
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
 }
+
+# B 站 getDanmuInfo 对无登录态/机房 IP 会返回 -352（风控）。
+# 兜底用的公共弹幕服务器：token 传空也能收到普通弹幕。
+FALLBACK_HOSTS = [
+    ("broadcastlv.chat.bilibili.com", 443),
+    ("tx-bj-live-comet-01.chat.bilibili.com", 443),
+    ("tx-sh-live-comet-01.chat.bilibili.com", 443),
+    ("bd-live-comet-01.chat.bilibili.com", 443),
+]
 
 
 def room_id(x):
@@ -93,10 +104,20 @@ class Bili:
         return j["data"]
 
     def _wbi_keys(self):
-        nav = self._get("https://api.bilibili.com/x/web-interface/nav")
-        wbi = nav["wbi_img"]
-        return wbi["img_url"].rsplit("/", 1)[1].split(".")[0], \
-            wbi["sub_url"].rsplit("/", 1)[1].split(".")[0]
+        # nav 匿名访问返回 code=-101（未登录），但 wbi_img 仍在 data 里，别用 _get。
+        r = self.s.get("https://api.bilibili.com/x/web-interface/nav", timeout=10)
+        wbi = ((r.json() or {}).get("data") or {}).get("wbi_img") or {}
+        return (wbi["img_url"].rsplit("/", 1)[1].split(".")[0],
+                wbi["sub_url"].rsplit("/", 1)[1].split(".")[0])
+
+    def _buvid(self):
+        """取一次 buvid3，风控策略对带设备指纹的请求更宽松。"""
+        if self.s.cookies.get("buvid3"):
+            return
+        try:
+            self.s.get("https://www.bilibili.com/", timeout=10)
+        except Exception:
+            pass
 
     def resolve(self, rid):
         """真实房间号、主播 UID、标题。"""
@@ -107,21 +128,43 @@ class Bili:
     def danmaku_token(self, rid):
         """弹幕服务器地址 + token。
 
-        带 SESSDATA 时先用 wbi 签名（部分房间动态加密），失败自动降级为匿名；
-        匿名也能收到普通弹幕。
+        getDanmuInfo 现在对匿名/机房 IP 返回 -352，所以按可靠性依次降级：
+          1. WBI 签名 + 已登录 cookie（最稳）
+          2. WBI 签名 + 匿名（带 buvid3）
+          3. 不签名直接请求
+          4. 全部失败 → 用公共弹幕服务器 + 空 token（仍能收普通弹幕）
+        每个分支都试，谁先成功用谁。
         """
-        if self.s.cookies.get("SESSDATA"):
+        self._buvid()
+        v1 = "https://api.live.bilibili.com/xlive/web-room/v1/index/getDanmuInfo"
+
+        plans = []
+        try:
+            ik, sk = self._wbi_keys()
+            plans.append(("wbi", lambda: self._get(
+                v1, params=wbi_sign({"id": rid, "type": 0,
+                                     "web_location": "444.8"}, ik, sk))))
+        except Exception as e:
+            log.debug("取 wbi 密钥失败: %s", e)
+        plans.append(("plain", lambda: self._get(v1, params={"id": rid, "type": 0})))
+
+        last = None
+        for name, fn in plans:
             try:
-                ik, sk = self._wbi_keys()
-                p = wbi_sign({"id": rid, "type": 0, "web_location": "444.8"}, ik, sk)
-                d = self._get("https://api.live.bilibili.com/xlive/web-room/v2/"
-                              "index/getDanmuInfo", params=p)
-                return d["host_list"][0], d["token"]
-            except Exception as e:  # 降级为匿名
-                log.info("wbi 取 token 失败，改用匿名: %s", e)
-        d = self._get("https://api.live.bilibili.com/xlive/web-room/v1/"
-                      "index/getDanmuInfo", params={"id": rid})
-        return d["host_list"][0], d["token"]
+                d = fn()
+                hosts = d.get("host_list") or []
+                if not hosts:
+                    continue
+                h = hosts[0]
+                log.info("弹幕地址已获取（%s）：%s:%s", name, h["host"], h["wss_port"])
+                return h, d.get("token") or ""
+            except Exception as e:
+                last = e
+                log.warning("取弹幕地址失败（%s）: %s", name, e)
+
+        log.warning("getDanmuInfo 不可用（%s），改用公共弹幕服务器", last)
+        host, port = FALLBACK_HOSTS[0]
+        return {"host": host, "wss_port": port}, ""
 
 
 GUARD = {1: "总督", 2: "提督", 3: "舰长"}
@@ -293,17 +336,23 @@ class BiliDanmaku(threading.Thread):
 
     def run(self):
         api = Bili(self.sessdata)
+        attempt = 0
         while not self._stop.is_set():
             try:
                 self.rid, self.uid, self.title = api.resolve(self.rid)
                 real = self.rid
                 host, token = api.danmaku_token(real)
+                if not token:
+                    # 没有 token 时轮换公共服务器，避免死磕一个连不上的节点
+                    host = dict(zip(("host", "wss_port"),
+                                    FALLBACK_HOSTS[attempt % len(FALLBACK_HOSTS)]))
+                    attempt += 1
                 url = "wss://%s:%s/sub" % (host["host"], host["wss_port"])
                 self._ws = ws = websocket.WebSocketApp(
                     url, on_message=self._on_msg, on_error=lambda *a: None,
                     header=[f"{k}: {v}" for k, v in HEADERS.items()])
                 ws.on_open = lambda w, r=real, t=token: self._auth(w, r, t)
-                log.info("已连接直播间 %s（%s）", real, self.title)
+                log.info("已连接直播间 %s（%s）→ %s", real, self.title, host["host"])
                 ws.run_forever(ping_interval=0)
             except Exception as e:
                 log.warning("弹幕连接异常: %s", e)
