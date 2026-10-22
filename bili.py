@@ -156,13 +156,26 @@ class Bili:
                 if not hosts:
                     continue
                 h = hosts[0]
+                self._token_ok = True
                 log.info("弹幕地址已获取（%s）：%s:%s", name, h["host"], h["wss_port"])
                 return h, d.get("token") or ""
             except Exception as e:
                 last = e
-                log.warning("取弹幕地址失败（%s）: %s", name, e)
+                log.debug("取弹幕地址失败（%s）: %s", name, e)
 
-        log.warning("getDanmuInfo 不可用（%s），改用公共弹幕服务器", last)
+        # 只在第一次失败时把话说清楚，之后重连静默 —— 否则每 5 秒刷屏没人看得下去
+        if not self._token_warned:
+            self._token_warned = True
+            if not (self.sessdata or "").strip():
+                log.warning(
+                    "连不上 B 站弹幕接口（-352 风控）：没填 SESSDATA。\n"
+                    "    修法：登录 bilibili.com → F12 → Application → Cookies →\n"
+                    "    复制 SESSDATA 的 Value，填到 config.local.json 的 live.sessdata，\n"
+                    "    或者用 python webui.py 在网页里填。现在先挂公共服务器，多半收不到弹幕。")
+            else:
+                log.warning(
+                    "连不上 B 站弹幕接口（%s）。可能是这台机器的 IP 被风控，"
+                    "或 SESSDATA 已过期（重新登录复制一次）。现在挂公共服务器试试。", last)
         host, port = FALLBACK_HOSTS[0]
         return {"host": host, "wss_port": port}, ""
 
@@ -281,6 +294,8 @@ class BiliDanmaku(threading.Thread):
         self._ws = None
         self.uid = None
         self.title = ""
+        self._token_ok = False       # getDanmuInfo 是否成功过
+        self._token_warned = False   # 风控提示是否已打过（防刷屏）
 
     def stop(self):
         self._stop.set()
