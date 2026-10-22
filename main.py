@@ -496,7 +496,13 @@ def run(cfg, panel=True):
         offline_feeder(push, player, cfg)
         return
 
-    th = bili.BiliDanmaku(live["room"], live.get("sessdata", ""),
+    sessdata = (live.get("sessdata") or "").strip()
+    if not sessdata:
+        log.warning("没填 live.sessdata —— B 站现在对匿名请求的 getDanmuInfo 返回 -352，"
+                    "弹幕很可能连不上。请登录 bilibili.com 后从开发者工具复制 "
+                    "SESSDATA 填进 config.json 的 live.sessdata。")
+
+    th = bili.BiliDanmaku(live["room"], sessdata,
                           build_handler(cfg, player, push))
     th.start()
     log.info("点歌机已启动，直播间 %s", live["room"])
@@ -528,6 +534,57 @@ def selftest():
     print("selftest OK")
 
 
+def test_danmu(cfg, room, secs=15):
+    """只测弹幕链路：取 token → 连 WS → 数收到的消息条数。"""
+    sessdata = ((cfg.get("live") or {}).get("sessdata") or "").strip()
+    print("房间：%s" % room)
+    print("SESSDATA：%s" % ("已填写（%d 字符）" % len(sessdata) if sessdata
+                           else "空 —— 匿名请求 getDanmuInfo 现在会被 -352 拦掉"))
+
+    api = bili.Bili(sessdata)
+    try:
+        rid, uid, title = api.resolve(bili.room_id(room))
+        print("房间信息：%s（主播 UID %s）" % (title, uid))
+    except Exception as e:
+        print("取房间信息失败：%s" % e)
+        return
+    try:
+        host, token = api.danmaku_token(rid)
+        print("弹幕服务器：%s:%s" % (host["host"], host["wss_port"]))
+        print("token：%s" % ("%d 字符" % len(token) if token else "空（走的是公共服务器兜底）"))
+    except Exception as e:
+        print("取弹幕地址失败：%s" % e)
+        return
+
+    got = []
+    kinds = {}
+
+    def cb(kind, payload):
+        got.append((kind, payload))
+        kinds[kind] = kinds.get(kind, 0) + 1
+        if len(got) <= 8:
+            if kind == "chat":
+                print("  [弹幕] %s: %s" % (payload.get("user"), payload.get("text")))
+            else:
+                print("  [%s] %s" % (kind, str(payload)[:80]))
+
+    th = bili.BiliDanmaku(room, sessdata, cb)
+    th.start()
+    print("\n监听 %d 秒…" % secs)
+    t0 = time.time()
+    while time.time() - t0 < secs:
+        time.sleep(0.5)
+    th.stop()
+
+    print("\n结果：共收到 %d 条（%s）" % (
+        len(got), "、".join("%s=%d" % kv for kv in kinds.items()) or "无"))
+    if not got:
+        print("收不到弹幕。常见原因：")
+        print("  1) live.sessdata 没填或已过期 —— B 站现在匿名不给弹幕")
+        print("  2) 房间没人说话（换个大主播房间试试）")
+        print("  3) 本机 IP 被风控（换网络/加登录态）")
+
+
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s %(name)s %(message)s", datefmt="%H:%M:%S")
@@ -544,6 +601,9 @@ if __name__ == "__main__":
                     help="重新走首次运行向导（问要不要登录酷狗 VIP）")
     ap.add_argument("--sources", action="store_true",
                     help="看看三家音乐源现在通不通")
+    ap.add_argument("--test-danmu", dest="test_danmu", default="",
+                    metavar="房间号",
+                    help="只测弹幕连接（填房间号），打印能否取到 token / 收到弹幕")
     ap.add_argument("--cfg", default=os.path.join(HERE, "config.json"))
     a = ap.parse_args()
     if a.offline:
@@ -574,6 +634,8 @@ if __name__ == "__main__":
             u, why, hit = srcs.url_with_fallback(srcs.search(a.once, 1)[0]) \
                 if srcs.search(a.once, 1) else (None, "没结果", None)
             print("\n直链:", (u or "拿不到")[:90] if u else "拿不到：%s" % why)
+    elif a.test_danmu:
+        test_danmu(load_cfg(a.cfg), a.test_danmu)
     elif a.once:
         s = parse_order("点歌 " + a.once) or {"title": a.once, "artist": ""}
         p = Player(cfg, Push(0))
